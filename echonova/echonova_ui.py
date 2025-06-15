@@ -87,19 +87,6 @@ class EchoNovaApp:
         self.wave_phase   = 0
         self.particles    = []
 
-        # TTS engine
-        self.engine = None
-        if TTS_AVAILABLE:
-            try:
-                self.engine = pyttsx3.init()
-                voices = self.engine.getProperty('voices')
-                if len(voices) > 1:
-                    self.engine.setProperty('voice', voices[1].id)
-                self.engine.setProperty('rate', 150)
-                self.engine.setProperty('volume', 1)
-            except Exception:
-                self.engine = None
-
         self._build_ui()
         self._animate()
         self._greet()
@@ -408,15 +395,25 @@ class EchoNovaApp:
     def _listen_thread(self):
         self.is_listening = True
         self.root.after(0, lambda: self.orb_label.config(
-            text="[ LISTENING... ]", fg=ACCENT))
-        self.root.after(0, lambda: self.status_label.config(text="LISTENING"))
+            text="[ CALIBRATING... ]", fg=TEXT_DIM))
+        self.root.after(0, lambda: self.status_label.config(text="CALIBRATING"))
         self.root.after(0, lambda: self.status_dot.config(fg=ACCENT))
 
         r = sr.Recognizer()
+        r.energy_threshold = 300        # default sensitivity
+        r.dynamic_energy_threshold = True
+        r.pause_threshold = 0.8         # shorter pause = more responsive
+        r.phrase_threshold = 0.3
+
         try:
             with sr.Microphone() as source:
-                r.pause_threshold = 1
-                audio = r.listen(source, timeout=6)
+                # Adjust for ambient noise first — KEY fix for "doesn't listen" bug
+                r.adjust_for_ambient_noise(source, duration=0.8)
+                self.root.after(0, lambda: self.orb_label.config(
+                    text="[ LISTENING... ]", fg=ACCENT))
+                self.root.after(0, lambda: self.status_label.config(text="LISTENING"))
+                audio = r.listen(source, timeout=7, phrase_time_limit=10)
+
             query = r.recognize_google(audio, language="en-in").lower()
             self.root.after(0, lambda: self._add_log(query, "user"))
             self.root.after(0, lambda: self._process_command(query))
@@ -425,7 +422,10 @@ class EchoNovaApp:
             self.root.after(0, lambda: self._set_response("I didn't hear anything. Please try again."))
         except sr.UnknownValueError:
             self.root.after(0, lambda: self._add_log("Could not understand audio.", "error"))
-            self.root.after(0, lambda: self._set_response("Sorry, I couldn't understand that."))
+            self.root.after(0, lambda: self._set_response("Sorry, I couldn't understand that. Speak clearly and try again."))
+        except sr.RequestError as ex:
+            self.root.after(0, lambda: self._add_log(f"Network error: {ex}", "error"))
+            self.root.after(0, lambda: self._set_response("Network error. Check your internet connection."))
         except Exception as ex:
             self.root.after(0, lambda: self._add_log(f"Error: {ex}", "error"))
         finally:
@@ -441,7 +441,7 @@ class EchoNovaApp:
         if not query or query == "type a command...":
             return
 
-        self._add_log(query, "user")
+        self.root.after(0, lambda: self._add_log(query, "user"))
 
         if "time" in query:
             self._cmd_time()
@@ -492,17 +492,18 @@ class EchoNovaApp:
             return
         try:
             self.root.after(0, lambda: self._set_response("Searching Wikipedia..."))
-            result = wikipedia.summary(topic, sentences=2)
-            self.root.after(0, lambda: self._speak_and_show(result))
+            result = wikipedia.summary(topic, sentences=3)
+            self.root.after(0, lambda r=result: self._speak_and_show(r))
         except wikipedia.exceptions.DisambiguationError:
             self.root.after(0, lambda: self._speak_and_show("Multiple results found. Please be more specific."))
         except Exception:
             self.root.after(0, lambda: self._speak_and_show("Couldn't find anything on Wikipedia for that topic."))
 
     def _cmd_music(self, song_name):
-        song_dir = os.path.expanduser("~\\Music")
+        song_dir = os.path.expanduser("~/Music")
         try:
-            songs = os.listdir(song_dir)
+            songs = [s for s in os.listdir(song_dir)
+                     if s.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg'))]
         except Exception:
             self.root.after(0, lambda: self._speak_and_show("Could not access Music folder."))
             return
@@ -510,8 +511,12 @@ class EchoNovaApp:
             songs = [s for s in songs if song_name.lower() in s.lower()]
         if songs:
             song = random.choice(songs)
-            os.startfile(os.path.join(song_dir, song))
-            self.root.after(0, lambda: self._speak_and_show(f"Playing {song}."))
+            try:
+                os.startfile(os.path.join(song_dir, song))
+            except AttributeError:
+                import subprocess
+                subprocess.Popen(['xdg-open', os.path.join(song_dir, song)])
+            self.root.after(0, lambda s=song: self._speak_and_show(f"Playing {s}."))
         else:
             self.root.after(0, lambda: self._speak_and_show("No songs found in your Music folder."))
 
@@ -527,9 +532,9 @@ class EchoNovaApp:
             self.root.after(0, lambda: self._speak_and_show("PyAutoGUI not installed. Run: pip install pyautogui"))
             return
         img = pyautogui.screenshot()
-        path = os.path.expanduser("~\\Pictures\\echonova_screenshot.png")
+        path = os.path.expanduser("~/Pictures/echonova_screenshot.png")
         img.save(path)
-        self.root.after(0, lambda: self._speak_and_show(f"Screenshot saved to Pictures folder."))
+        self.root.after(0, lambda: self._speak_and_show("Screenshot saved to your Pictures folder."))
 
     def _cmd_joke(self):
         if JOKES_AVAILABLE:
@@ -549,6 +554,7 @@ class EchoNovaApp:
             r = sr.Recognizer()
             try:
                 with sr.Microphone() as source:
+                    r.adjust_for_ambient_noise(source, duration=0.5)
                     audio = r.listen(source, timeout=5)
                 name = r.recognize_google(audio, language="en-in")
                 with open("assistant_name.txt", "w") as f:
@@ -575,13 +581,22 @@ class EchoNovaApp:
     def _speak_and_show(self, text):
         self._set_response(text)
         self._add_log(text, "system")
-        if self.engine:
+        # Always speak if pyttsx3 is available — fresh engine per call avoids conflicts
+        if TTS_AVAILABLE:
             threading.Thread(target=self._tts, args=(text,), daemon=True).start()
 
     def _tts(self, text):
         try:
-            self.engine.say(text)
-            self.engine.runAndWait()
+            engine = pyttsx3.init()
+            voices = engine.getProperty('voices')
+            # Prefer female voice (index 1) if available, else use default
+            if voices and len(voices) > 1:
+                engine.setProperty('voice', voices[1].id)
+            engine.setProperty('rate', 150)
+            engine.setProperty('volume', 1.0)
+            engine.say(text)
+            engine.runAndWait()
+            engine.stop()
         except Exception:
             pass
 
