@@ -95,6 +95,10 @@ echonova/
 ```
 
 ---
+How to run it open powershell 
+install required libraries pip install pyttsx3 speechrecognition wikipedia pyjokes pyautogui
+then write location of files cd C:\Users\Rupesh\Downloads\EchoNova\EchoNova-Desktop-Voice-Assistant-main\echonova
+then write  python echonova_ui.py
 
 ## ⚠️ Note
 
